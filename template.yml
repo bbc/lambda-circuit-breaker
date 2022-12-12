@@ -130,7 +130,7 @@ Resources:
   ManageSQSEventSourceFunction:
     Type: AWS::Serverless::Function
     Properties:
-      Runtime: nodejs12.x
+      Runtime: nodejs18.x
       Handler: src/handlers/update-event-source-mapping.handler
       Environment:
         Variables:
@@ -237,7 +237,7 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
 #      FunctionName: !Sub "SQSTrialPoller-${TargetFunctionName}"
-      Runtime: nodejs12.x
+      Runtime: nodejs18.x
       Handler: src/handlers/sqs-trial-poller.handler
       MemorySize: 128
       Timeout: 900 # max. function duration. Configure appropriate timeout on target function
