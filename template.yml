@@ -131,7 +131,35 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       Runtime: nodejs18.x
-      Handler: src/handlers/update-event-source-mapping.handler
+      Handler: index.handler
+      InlineCode: |+
+        const {
+          LambdaClient, ListEventSourceMappingsCommand, UpdateEventSourceMappingCommand,
+        } = require("@aws-sdk/client-lambda");
+        const lambda = new LambdaClient({ region: process.env.AWS_REGION });
+        const queueArn = process.env.QUEUE_ARN;
+        const functionName = process.env.FUNCTION_NAME;
+
+        exports.handler = async (event) => {
+            console.log(event);
+            const listResponse = await lambda.send(new ListEventSourceMappingsCommand({
+                EventSourceArn: queueArn,
+                FunctionName: functionName
+            }));
+
+            if (listResponse.EventSourceMappings && listResponse.EventSourceMappings.length > 0) {
+                const eventSourceMapping = listResponse.EventSourceMappings[0];
+                console.log(`Set event source mapping ${eventSourceMapping.UUID} enabled property to ${event.enabled}...`);
+                await lambda.send(new UpdateEventSourceMappingCommand({
+                    UUID: eventSourceMapping.UUID,
+                    Enabled: event.enabled
+                }));
+                return "ok";
+            } else {
+                console.log(`No / multiple event source for EventSourceArn ${queueArn} and funcation name ${functionName} found.`);
+                return "failed";
+            }
+        }
       Environment:
         Variables:
           FUNCTION_NAME: !Ref TargetFunctionName
@@ -238,7 +266,78 @@ Resources:
     Properties:
 #      FunctionName: !Sub "SQSTrialPoller-${TargetFunctionName}"
       Runtime: nodejs18.x
-      Handler: src/handlers/sqs-trial-poller.handler
+      Handler: index.handler
+      InlineCode: |+
+        const { LambdaClient } = require("@aws-sdk/client-lambda");
+        const {
+          SQSClient,  GetQueueUrlCommand,
+          ReceiveMessageCommand, GetDeleteMessageCommand,
+        } = require("@aws-sdk/client-sqs");
+        const sqs = new SQSClient({ region: process.env.AWS_REGION });
+        const lambda = new LambdaClient({
+            region: process.env.AWS_REGION,
+            maxRetries: 0 // Avoid retries if target lambda function is timed out.
+        });
+
+        const queueName = process.env.QUEUE_NAME;
+        const functionName = process.env.FUNCTION_NAME;
+
+        exports.handler = async () => {
+            console.log(`Resolve URL of queue with name ${queueName}...`);
+            const urlCmd = new GetQueueUrlCommand({QueueName: queueName});
+            const queueUrlResult = await sqs.send(urlCmd);
+            const queueUrl = queueUrlResult.QueueUrl;
+
+            console.log(`Poll queue ${queueUrl} for message...`);
+            const rxCmd = new ReceiveMessageCommand({
+                QueueUrl: queueUrl,
+                AttributeNames: ["All"]
+            });
+            const data = await sqs.send(rxCmd);
+
+            if(data.Messages && data.Messages.length > 0) {
+                console.log(`Message received. Invoking lambda function ${functionName} with SQS event...`);
+                const sqsMessage = data.Messages[0];
+                const sqsEvent = { Records: [{
+                    messageId: sqsMessage.MessageId,
+                    receiptHandle: sqsMessage.ReceiptHandle,
+                    body: sqsMessage.Body,
+                    md5OfBody: sqsMessage.MD5OfBody,
+                    attributes: sqsMessage.Attributes,
+                    messageAttributes: sqsMessage.MessageAttributes || {},
+                    eventSource: "aws:sqs",
+                    queueArn: data.QueueArn
+                }]};
+                try {
+                    const lambdaInvokeResult = await lambda.invoke({
+                        FunctionName: functionName,
+                        Payload: JSON.stringify(sqsEvent)
+                    }).promise();
+                    console.log("Invocation result: " + JSON.stringify(lambdaInvokeResult));
+                    if (lambdaInvokeResult.FunctionError) {
+                        console.log("Invocation with function error.");
+                        return "failed";
+                    }
+                    console.log("Invocation succeeded.");
+                } catch (e) {
+                    console.log("Invocation failed: " + JSON.stringify(e));
+                    return "failed";
+                }
+
+                console.log(`Deleting message ${sqsMessage.MessageId} from queue...`);
+                const delCmd = new GetDeleteMessageCommand({
+                    QueueUrl: queueUrl,
+                    ReceiptHandle: sqsMessage.ReceiptHandle
+                });
+                const deleteMessageResult = await sqs.send(delCmd);
+                console.log("Message deleted. Result: " + JSON.stringify(deleteMessageResult));
+                return "passed";
+            } else {
+                console.log("No messages available.");
+                return "no-message-available";
+            }
+
+        }
       MemorySize: 128
       Timeout: 900 # max. function duration. Configure appropriate timeout on target function
       Environment:
