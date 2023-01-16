@@ -1,7 +1,7 @@
 const { LambdaClient, InvokeCommand } = require("@aws-sdk/client-lambda");
 const {
   SQSClient,  GetQueueUrlCommand,
-  ReceiveMessageCommand, GetDeleteMessageCommand,
+  ReceiveMessageCommand, DeleteMessageCommand,
 } = require("@aws-sdk/client-sqs");
 const sqs = new SQSClient({ region: process.env.AWS_REGION });
 const lambda = new LambdaClient({
@@ -57,7 +57,7 @@ exports.handler = async () => {
        }
 
         console.log(`Deleting message ${sqsMessage.MessageId} from queue...`);
-        const delCmd = new GetDeleteMessageCommand({
+        const delCmd = new DeleteMessageCommand({
             QueueUrl: queueUrl,
             ReceiptHandle: sqsMessage.ReceiptHandle
         });
