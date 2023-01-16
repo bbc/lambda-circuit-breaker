@@ -1,6 +1,11 @@
-const AWS = require('aws-sdk');
-const sqs = new AWS.SQS();
-const lambda = new AWS.Lambda({
+const { LambdaClient, InvokeCommand } = require("@aws-sdk/client-lambda");
+const {
+  SQSClient,  GetQueueUrlCommand,
+  ReceiveMessageCommand, GetDeleteMessageCommand,
+} = require("@aws-sdk/client-sqs");
+const sqs = new SQSClient({ region: process.env.AWS_REGION });
+const lambda = new LambdaClient({
+    region: process.env.AWS_REGION,
     maxRetries: 0 // Avoid retries if target lambda function is timed out.
 });
 
@@ -9,14 +14,16 @@ const functionName = process.env.FUNCTION_NAME;
 
 exports.handler = async () => {
     console.log(`Resolve URL of queue with name ${queueName}...`);
-    const queueUrlResult = await sqs.getQueueUrl({QueueName: queueName}).promise();
+    const urlCmd = new GetQueueUrlCommand({QueueName: queueName});
+    const queueUrlResult = await sqs.send(urlCmd);
     const queueUrl = queueUrlResult.QueueUrl;
 
     console.log(`Poll queue ${queueUrl} for message...`);
-    const data = await sqs.receiveMessage({
+    const rxCmd = new ReceiveMessageCommand({
         QueueUrl: queueUrl,
         AttributeNames: ["All"]
-    }).promise();
+    });
+    const data = await sqs.send(rxCmd);
 
     if(data.Messages && data.Messages.length > 0) {
         console.log(`Message received. Invoking lambda function ${functionName} with SQS event...`);
@@ -31,11 +38,13 @@ exports.handler = async () => {
             eventSource: "aws:sqs",
             queueArn: data.QueueArn
         }]};
+        console.log('sqs payload', JSON.stringify(sqsEvent));
         try {
-            const lambdaInvokeResult = await lambda.invoke({
+            const command = new InvokeCommand({
                 FunctionName: functionName,
                 Payload: JSON.stringify(sqsEvent)
-            }).promise();
+            });
+            const lambdaInvokeResult = await lambda.send(command);
             console.log("Invocation result: " + JSON.stringify(lambdaInvokeResult));
             if (lambdaInvokeResult.FunctionError) {
                 console.log("Invocation with function error.");
@@ -45,13 +54,14 @@ exports.handler = async () => {
         } catch (e) {
             console.log("Invocation failed: " + JSON.stringify(e));
             return "failed";
-        }
+       }
 
         console.log(`Deleting message ${sqsMessage.MessageId} from queue...`);
-        const deleteMessageResult = await sqs.deleteMessage({
+        const delCmd = new GetDeleteMessageCommand({
             QueueUrl: queueUrl,
             ReceiptHandle: sqsMessage.ReceiptHandle
-        }).promise();
+        });
+        const deleteMessageResult = await sqs.send(delCmd);
         console.log("Message deleted. Result: " + JSON.stringify(deleteMessageResult));
         return "passed";
     } else {
